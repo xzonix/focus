@@ -1,0 +1,311 @@
+
+name: Build Focus APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Generate Focus project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/example/focus
+          mkdir -p app/src/main/res/xml app/src/main/res/values
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Focus"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+          android {
+              namespace = "com.example.focus"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.example.focus"
+                  minSdk = 23
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+              implementation("androidx.activity:activity-compose:1.10.0")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+              debugImplementation("androidx.compose.ui:ui-tooling")
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="Focus" android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".MyAccessibilityService"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                      android:exported="true"
+                      android:label="Focus - bloquear Reels">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService"/>
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config"/>
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/xml/accessibility_service_config.xml <<'EOF'
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeViewClicked"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:notificationTimeout="50"
+              android:canRetrieveWindowContent="true"
+              android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+              android:description="@string/accessibility_description"/>
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+              <string name="app_name">Focus</string>
+              <string name="accessibility_description">Bloquea el reproductor de Reels.</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/java/com/example/focus/MainActivity.kt <<'EOF'
+          package com.example.focus
+
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Bundle
+          import android.provider.Settings
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import kotlinx.coroutines.delay
+
+          private const val PREFS = "focus_prefs"
+          private const val UNLOCK_UNTIL = "desbloqueado_hasta"
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      val navy = Color(0xFF101827)
+                      val panel = Color(0xFF1B2638)
+                      var until by remember {
+                          mutableLongStateOf(getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(UNLOCK_UNTIL, 0L))
+                      }
+                      var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+                      LaunchedEffect(Unit) {
+                          while (true) {
+                              now = System.currentTimeMillis()
+                              until = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(UNLOCK_UNTIL, 0L)
+                              delay(1000)
+                          }
+                      }
+                      val unlocked = until > now
+                      val left = ((until - now).coerceAtLeast(0L) / 1000L)
+                      MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF8AB4F8))) {
+                          Surface(Modifier.fillMaxSize(), color = navy) {
+                              Column(
+                                  Modifier.fillMaxSize().padding(24.dp),
+                                  horizontalAlignment = Alignment.CenterHorizontally,
+                                  verticalArrangement = Arrangement.Center
+                              ) {
+                                  Text("FOCUS", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                  Spacer(Modifier.height(8.dp))
+                                  Text("Menos scroll. Más vida.", color = Color(0xFF9AAAC0))
+                                  Spacer(Modifier.height(36.dp))
+                                  Column(
+                                      Modifier.fillMaxWidth().background(panel, RoundedCornerShape(22.dp)).padding(22.dp),
+                                      horizontalAlignment = Alignment.CenterHorizontally
+                                  ) {
+                                      Text(if (unlocked) "Reels desbloqueados" else "Reels bloqueados",
+                                          color = if (unlocked) Color(0xFFFFC66D) else Color(0xFF8FE0B0),
+                                          fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                                      Spacer(Modifier.height(8.dp))
+                                      Text(if (unlocked) "Tiempo restante: %02d:%02d".format(left / 60, left % 60)
+                                          else "Instagram funciona, excepto Reels.", color = Color(0xFFCFD8E6))
+                                  }
+                                  Spacer(Modifier.height(22.dp))
+                                  Button(
+                                      onClick = {
+                                          val end = System.currentTimeMillis() + 15 * 60 * 1000L
+                                          getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(UNLOCK_UNTIL, end).apply()
+                                          until = end
+                                          now = System.currentTimeMillis()
+                                      },
+                                      modifier = Modifier.fillMaxWidth().height(54.dp),
+                                      shape = RoundedCornerShape(14.dp)
+                                  ) { Text("Desbloquear durante 15 minutos") }
+                                  Spacer(Modifier.height(12.dp))
+                                  Button(
+                                      onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                                      modifier = Modifier.fillMaxWidth().height(54.dp),
+                                      shape = RoundedCornerShape(14.dp)
+                                  ) { Text("Configurar permiso de accesibilidad") }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/focus/MyAccessibilityService.kt <<'EOF'
+          package com.example.focus
+
+          import android.accessibilityservice.AccessibilityService
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          import android.os.Handler
+          import android.os.Looper
+
+          class MyAccessibilityService : AccessibilityService() {
+              private val handler = Handler(Looper.getMainLooper())
+              private var pending = false
+              private var returned = false
+              private var absentSince = 0L
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  if (event?.packageName?.toString() != "com.instagram.android") return
+                  if (pending) return
+                  pending = true
+                  var attempts = 0
+                  val task = object : Runnable {
+                      override fun run() {
+                          val root = rootInActiveWindow
+                          val found = root?.let { hasPlayer(it, 0) } ?: false
+                          root?.recycle()
+                          if (found) {
+                              absentSince = 0L
+                              val until = getSharedPreferences("focus_prefs", MODE_PRIVATE)
+                                  .getLong("desbloqueado_hasta", 0L)
+                              if (System.currentTimeMillis() >= until && !returned) {
+                                  returned = true
+                                  performGlobalAction(GLOBAL_ACTION_BACK)
+                              }
+                          } else {
+                              if (absentSince == 0L) absentSince = System.currentTimeMillis()
+                              if (System.currentTimeMillis() - absentSince > 900L) returned = false
+                          }
+                          attempts++
+                          if (attempts < 10 && !returned) handler.postDelayed(this, 250L)
+                          else pending = false
+                      }
+                  }
+                  handler.post(task)
+              }
+
+              private fun hasPlayer(node: AccessibilityNodeInfo, depth: Int): Boolean {
+                  if (depth > 28) return false
+                  val id = node.viewIdResourceName?.lowercase().orEmpty()
+                  val match = (id.contains("clips") &&
+                      listOf("viewer", "player", "video_container", "media_view", "view_pager").any { id.contains(it) }) ||
+                      (id.contains("reel") && (id.contains("viewer") || id.contains("player")))
+                  if (match) return true
+                  for (i in 0 until node.childCount) {
+                      val child = node.getChild(i) ?: continue
+                      val found = hasPlayer(child, depth + 1)
+                      child.recycle()
+                      if (found) return true
+                  }
+                  return false
+              }
+
+              override fun onInterrupt() {
+                  handler.removeCallbacksAndMessages(null)
+                  pending = false
+              }
+          }
+          EOF
+
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Focus-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
