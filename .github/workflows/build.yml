@@ -12,7 +12,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,8 +31,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p app/src/main/java/com/example/focus
-          mkdir -p app/src/main/res/xml
-          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/xml app/src/main/res/values
 
           cat > settings.gradle.kts <<'EOF'
           pluginManagement {
@@ -103,9 +101,7 @@ jobs:
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <application
-                  android:label="Focus"
-                  android:allowBackup="false"
+              <application android:label="Focus" android:allowBackup="false"
                   android:theme="@android:style/Theme.Material.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
@@ -113,16 +109,13 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
                   </activity>
-                  <service
-                      android:name=".MyAccessibilityService"
+                  <service android:name=".MyAccessibilityService"
                       android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-                      android:exported="true"
-                      android:label="Focus - bloquear Reels">
+                      android:exported="true" android:label="Focus - bloquear Reels">
                       <intent-filter>
                           <action android:name="android.accessibilityservice.AccessibilityService"/>
                       </intent-filter>
-                      <meta-data
-                          android:name="android.accessibilityservice"
+                      <meta-data android:name="android.accessibilityservice"
                           android:resource="@xml/accessibility_service_config"/>
                   </service>
               </application>
@@ -208,18 +201,12 @@ jobs:
                                       Modifier.fillMaxWidth().background(panel, RoundedCornerShape(22.dp)).padding(22.dp),
                                       horizontalAlignment = Alignment.CenterHorizontally
                                   ) {
-                                      Text(
-                                          if (unlocked) "Reels desbloqueados" else "Reels bloqueados",
+                                      Text(if (unlocked) "Reels desbloqueados" else "Reels bloqueados",
                                           color = if (unlocked) Color(0xFFFFC66D) else Color(0xFF8FE0B0),
-                                          fontSize = 20.sp,
-                                          fontWeight = FontWeight.SemiBold
-                                      )
+                                          fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                                       Spacer(Modifier.height(8.dp))
-                                      Text(
-                                          if (unlocked) "Tiempo restante: %02d:%02d".format(left / 60, left % 60)
-                                          else "Instagram funciona, excepto Reels.",
-                                          color = Color(0xFFCFD8E6)
-                                      )
+                                      Text(if (unlocked) "Tiempo restante: %02d:%02d".format(left / 60, left % 60)
+                                          else "Instagram funciona, excepto Reels.", color = Color(0xFFCFD8E6))
                                   }
                                   Spacer(Modifier.height(22.dp))
                                   Button(
@@ -232,17 +219,13 @@ jobs:
                                       },
                                       modifier = Modifier.fillMaxWidth().height(54.dp),
                                       shape = RoundedCornerShape(14.dp)
-                                  ) {
-                                      Text("Desbloquear durante 15 minutos")
-                                  }
+                                  ) { Text("Desbloquear durante 15 minutos") }
                                   Spacer(Modifier.height(12.dp))
                                   Button(
                                       onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                                       modifier = Modifier.fillMaxWidth().height(54.dp),
                                       shape = RoundedCornerShape(14.dp)
-                                  ) {
-                                      Text("Configurar permiso de accesibilidad")
-                                  }
+                                  ) { Text("Configurar permiso de accesibilidad") }
                               }
                           }
                       }
@@ -263,18 +246,24 @@ jobs:
           class MyAccessibilityService : AccessibilityService() {
               private val handler = Handler(Looper.getMainLooper())
               private var scanPending = false
+              private var scanAgain = false
               private var playerWasVisible = false
               private var lastBackAt = 0L
               private var absentScans = 0
 
               override fun onAccessibilityEvent(event: AccessibilityEvent?) {
                   if (event?.packageName?.toString() != INSTAGRAM_PACKAGE) return
-                  scheduleScans()
+                  if (scanPending) {
+                      scanAgain = true
+                  } else {
+                      startScanning()
+                  }
               }
 
-              private fun scheduleScans() {
+              private fun startScanning() {
                   if (scanPending) return
                   scanPending = true
+                  scanAgain = false
                   var attempts = 0
 
                   val scan = object : Runnable {
@@ -303,7 +292,8 @@ jobs:
                           }
 
                           attempts++
-                          if (attempts < MAX_SCANS) {
+                          if (attempts < MAX_SCANS || scanAgain) {
+                              scanAgain = false
                               handler.postDelayed(this, SCAN_INTERVAL_MS)
                           } else {
                               scanPending = false
@@ -316,12 +306,12 @@ jobs:
               private fun containsReelsPlayer(node: AccessibilityNodeInfo, depth: Int): Boolean {
                   if (depth > MAX_DEPTH) return false
                   val id = node.viewIdResourceName?.lowercase().orEmpty()
-
-                  val match = (id.contains("clips") &&
-                      listOf("viewer", "player", "video_container", "media_view", "view_pager")
-                          .any { id.contains(it) }) ||
+                  val match = node.isVisibleToUser && (
+                      (id.contains("clips") &&
+                          listOf("viewer", "player", "video_container", "media_view", "view_pager")
+                              .any { id.contains(it) }) ||
                       (id.contains("reel") && (id.contains("viewer") || id.contains("player")))
-
+                  )
                   if (match) return true
 
                   for (i in 0 until node.childCount) {
@@ -336,6 +326,7 @@ jobs:
               override fun onInterrupt() {
                   handler.removeCallbacksAndMessages(null)
                   scanPending = false
+                  scanAgain = false
               }
 
               override fun onDestroy() {
@@ -348,7 +339,7 @@ jobs:
                   private const val UNLOCK_UNTIL = "desbloqueado_hasta"
                   private const val INSTAGRAM_PACKAGE = "com.instagram.android"
                   private const val SCAN_INTERVAL_MS = 250L
-                  private const val MAX_SCANS = 10
+                  private const val MAX_SCANS = 20
                   private const val MAX_DEPTH = 28
                   private const val BACK_COOLDOWN_MS = 1400L
               }
